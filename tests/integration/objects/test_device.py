@@ -52,3 +52,53 @@ def test_ssp_intricate_grad_nan_bug():
     value, grad = jax.value_and_grad(fn)(params)
     assert not jnp.isnan(value) and not jnp.isinf(value)
     assert not jnp.any(jnp.isnan(grad["Device"]))
+
+
+def test_random_eta_field_generator_end_to_end():
+    """Full place_objects -> apply_params -> device() path with the RandomEtaFieldGenerator ->
+    FieldTanhProjection chain, confirming field_key threading and NaN-free gradients."""
+    config = fdtdx.SimulationConfig(
+        time=200e-15,
+        grid=fdtdx.UniformGrid(spacing=20e-9),
+        dtype=jnp.float32,
+        courant_factor=0.99,
+    )
+    material_config = {
+        "sio2": fdtdx.Material(permittivity=3.9),
+        "si": fdtdx.Material(permittivity=12.25),
+    }
+    height = 220e-9
+    volume = fdtdx.SimulationVolume(
+        partial_real_shape=(2e-6, 2e-6, height),
+        material=material_config["sio2"],
+    )
+    device = fdtdx.Device(
+        name="Device",
+        partial_real_shape=(2e-6, 2e-6, height),
+        materials=material_config,
+        param_transforms=[
+            fdtdx.RandomEtaFieldGenerator(correlation_length=100e-9),
+            fdtdx.FieldTanhProjection(),
+        ],
+        partial_voxel_real_shape=(config.uniform_spacing(), config.uniform_spacing(), height),
+    )
+    key = jax.random.PRNGKey(42)
+    objects, arrays, params, config, _ = fdtdx.place_objects(
+        object_list=[volume, device],
+        config=config,
+        constraints=[device.place_at_center(volume)],
+        key=key,
+    )
+
+    field_key = jax.random.PRNGKey(7)
+    arrays, new_objects, _ = fdtdx.apply_params(arrays, objects, params, key, beta=5.0, field_key=field_key)
+
+    def fn(p):
+        cur_material_indices = new_objects["Device"](  # type: ignore
+            p[device.name], expand_to_sim_grid=False, beta=5.0, field_key=field_key
+        )
+        return jnp.sum(cur_material_indices)
+
+    value, grad = jax.value_and_grad(fn)(params)
+    assert not jnp.isnan(value) and not jnp.isinf(value)
+    assert not jnp.any(jnp.isnan(grad["Device"]))

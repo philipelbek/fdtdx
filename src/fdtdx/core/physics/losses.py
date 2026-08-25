@@ -4,6 +4,48 @@ import jax
 import jax.numpy as jnp
 
 
+def weighted_p_mean(
+    values: jax.Array,
+    p: float | jax.Array,
+    weights: jax.Array | None = None,
+    eps: float = 1e-12,
+) -> jax.Array:
+    """Combine per-sample objectives into a single scalar via a weighted p-mean.
+
+    Computes ``(sum_i w_i * f_i**p) ** (1/p)``, evaluated in log-space via ``logsumexp``
+    for numerical stability at large ``|p|``. Useful for aggregating the objectives of several
+    stochastic samples (e.g. different random realizations of a fabrication-uncertainty field)
+    into one differentiable scalar loss: with uniform weights and ``p=1`` this is a plain Monte
+    Carlo average; increasing ``|p|`` smoothly pushes the aggregate towards a worst-case
+    (``p -> inf``) or best-case (``p -> -inf``) objective.
+
+    Args:
+        values (jax.Array): Per-sample objective values, shape ``(K,)``. Must be strictly positive
+            (values at or below ``eps`` are floored, which zeroes their gradient contribution).
+        p (float | jax.Array): p-mean exponent. ``p=0`` is the weighted geometric-mean limit,
+            handled separately (double-``where`` trick, evaluated everywhere so no branch produces
+            NaN gradients).
+        weights (jax.Array | None): Per-sample weights, shape ``(K,)``. Defaults to uniform
+            (``1/K`` each), i.e. an unweighted Monte Carlo estimate.
+        eps (float): Floor applied to ``values`` before taking the log, to keep the result finite.
+            Defaults to 1e-12.
+
+    Returns:
+        jax.Array: Scalar combined objective.
+    """
+    if weights is None:
+        weights = jnp.full(values.shape, 1.0 / values.shape[0])
+    log_values = jnp.log(jnp.clip(values, eps, None))
+
+    is_zero = p == 0
+    safe_p = jnp.where(is_zero, 1.0, p)
+    log_weighted_sum = jax.scipy.special.logsumexp(safe_p * log_values, b=weights)
+    p_mean = jnp.exp(log_weighted_sum / safe_p)
+
+    geometric_mean = jnp.exp(jnp.sum(weights * log_values))
+    return jnp.where(is_zero, geometric_mean, p_mean)
+
+
 def metric_efficiency(
     detector_states: dict[str, dict[str, jax.Array]],
     in_names: Sequence[str],

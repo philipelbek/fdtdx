@@ -8,7 +8,7 @@ from fdtdx.objects.device.parameters.transform import SameShapeTypeParameterTran
 from fdtdx.typing import ParameterType
 
 
-def tanh_projection(x: jax.Array, beta: float, eta: float) -> jax.Array:
+def tanh_projection(x: jax.Array, beta: float, eta: float | jax.Array) -> jax.Array:
     """
     Adapted from the meep repository:
     https://github.com/NanoComp/meep/blob/master/python/adjoint/filters.py
@@ -22,7 +22,8 @@ def tanh_projection(x: jax.Array, beta: float, eta: float) -> jax.Array:
         x (jax.Array): design weights to be filtered.
         beta (float): thresholding parameter in the range [0, inf]. Determines the
             degree of binarization of the output.
-        eta (float): threshold point in range [0, 1]
+        eta (float | jax.Array): threshold point in range [0, 1], either a fixed scalar or an
+            array broadcastable against ``x`` (e.g. a spatially-varying threshold field).
 
     Returns:
         jax.Array: The filtered design weights.

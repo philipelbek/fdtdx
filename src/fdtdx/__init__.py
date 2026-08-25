@@ -23,7 +23,7 @@ from fdtdx.core.jax.pytrees import (
     frozen_private_field,
     private_field,
 )
-from fdtdx.core.physics.losses import metric_efficiency
+from fdtdx.core.physics.losses import metric_efficiency, weighted_p_mean
 from fdtdx.core.physics.metrics import (
     compute_energy,
     compute_integrated_power,
@@ -102,6 +102,7 @@ from fdtdx.objects.device.parameters.discretization import (
     circular_brush,
 )
 from fdtdx.objects.device.parameters.projection import SubpixelSmoothedProjection, TanhProjection
+from fdtdx.objects.device.parameters.random_field import FieldTanhProjection, RandomEtaFieldGenerator
 from fdtdx.objects.device.parameters.symmetries import (
     DiagonalSymmetry2D,
     DiagonalSymmetry3D,
@@ -199,6 +200,7 @@ __all__ = [
     "FieldProjectionCartesianDetector",
     "FieldProjectionKSpaceDetector",
     "FieldState",
+    "FieldTanhProjection",
     "GDSLayerObject",
     "GDSLayerSpec",
     "GDSPortSpec",
@@ -236,6 +238,7 @@ __all__ = [
     "PositionConstraint",
     "PoyntingFluxDetector",
     "QuasiUniformGrid",
+    "RandomEtaFieldGenerator",
     "RealCoordinateConstraint",
     "Recorder",
     "RecordingState",
@@ -318,4 +321,5 @@ __all__ = [
     "unfold_fields",
     "unfold_source_mode",
     "wavelength_to_period",
+    "weighted_p_mean",
 ]

@@ -1,7 +1,90 @@
 import jax
 import jax.numpy as jnp
 
-from fdtdx.core.physics.losses import metric_efficiency
+from fdtdx.core.physics.losses import metric_efficiency, weighted_p_mean
+
+# ──────────────────────────────────────────────────────────────
+# weighted_p_mean
+# ──────────────────────────────────────────────────────────────
+
+
+def test_p_mean_uniform_p1_is_plain_mean():
+    """p=1 with default (uniform) weights reduces to the plain mean."""
+    values = jnp.array([1.0, 2.0, 3.0, 4.0])
+    result = weighted_p_mean(values, p=1.0)
+    assert jnp.allclose(result, jnp.mean(values))
+
+
+def test_p_mean_nonuniform_weights():
+    """Hand-computed weighted mean at p=1 with non-uniform weights."""
+    values = jnp.array([2.0, 4.0])
+    weights = jnp.array([0.25, 0.75])
+    result = weighted_p_mean(values, p=1.0, weights=weights)
+    # 0.25*2 + 0.75*4 = 0.5 + 3.0 = 3.5
+    assert jnp.allclose(result, 3.5)
+
+
+def test_p_mean_large_p_approaches_max():
+    """As p -> large positive, the p-mean approaches max(values) (soft-max limit).
+
+    Convergence with uniform weights is ``max * (1/N)**(1/p)`` -- at p=50, N=3 that's
+    ``10 * (1/3)**(1/50) ~= 9.78``, not exactly 10, hence the atol below (matches the
+    closed-form value, not a loose guess).
+    """
+    values = jnp.array([1.0, 2.0, 10.0])
+    result = weighted_p_mean(values, p=50.0)
+    assert jnp.allclose(result, jnp.max(values), atol=0.25)
+
+
+def test_p_mean_large_negative_p_approaches_min():
+    """As p -> large negative, the p-mean approaches min(values) (soft-min limit).
+
+    Same slow-convergence caveat as the soft-max test above, mirrored for p -> -inf.
+    """
+    values = jnp.array([1.0, 2.0, 10.0])
+    result = weighted_p_mean(values, p=-50.0)
+    assert jnp.allclose(result, jnp.min(values), atol=0.03)
+
+
+def test_p_mean_zero_is_geometric_mean():
+    """p=0 is the weighted geometric-mean limit."""
+    values = jnp.array([1.0, 4.0])
+    result = weighted_p_mean(values, p=0.0)
+    # geometric mean of 1 and 4 = sqrt(1*4) = 2
+    assert jnp.allclose(result, 2.0)
+
+
+def test_p_mean_zero_nonuniform_weights():
+    """Hand-computed weighted geometric mean at p=0 with non-uniform weights."""
+    values = jnp.array([1.0, 4.0])
+    weights = jnp.array([0.75, 0.25])
+    result = weighted_p_mean(values, p=0.0, weights=weights)
+    # exp(0.75*ln(1) + 0.25*ln(4)) = 4**0.25
+    assert jnp.allclose(result, 4.0**0.25)
+
+
+def test_p_mean_gradient_no_nan_at_p_zero():
+    """Gradient w.r.t. values must not be NaN at p=0 (double-where NaN-safety)."""
+    values = jnp.array([1.0, 2.0, 3.0])
+    grad = jax.grad(lambda v: weighted_p_mean(v, p=0.0).sum())(values)
+    assert not jnp.any(jnp.isnan(grad)), f"NaN in gradient: {grad}"
+
+
+def test_p_mean_gradient_no_nan_extreme_p():
+    """Gradient w.r.t. values must not be NaN at very large |p|."""
+    values = jnp.array([1.0, 2.0, 3.0])
+    grad_pos = jax.grad(lambda v: weighted_p_mean(v, p=50.0).sum())(values)
+    grad_neg = jax.grad(lambda v: weighted_p_mean(v, p=-50.0).sum())(values)
+    assert not jnp.any(jnp.isnan(grad_pos)), f"NaN in gradient: {grad_pos}"
+    assert not jnp.any(jnp.isnan(grad_neg)), f"NaN in gradient: {grad_neg}"
+
+
+def test_p_mean_gradient_matches_closed_form_at_p1():
+    """At p=1 with uniform weights, gradient w.r.t. each value is 1/K (plain mean)."""
+    values = jnp.array([2.0, 6.0])
+    grad = jax.grad(lambda v: weighted_p_mean(v, p=1.0).sum())(values)
+    assert jnp.allclose(grad, jnp.array([0.5, 0.5]))
+
 
 # ──────────────────────────────────────────────────────────────
 # metric_efficiency
