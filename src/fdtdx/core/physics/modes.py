@@ -361,6 +361,10 @@ def compute_mode(
     # c0_um and c1_um are passed as explicit args so JAX materialises them to
     # concrete numpy arrays before calling mode_helper, allowing np.asarray()
     # inside the callback without raising TracerArrayConversionError.
+    # vmap_method="sequential": tidy3d's external eigenmode solver cannot be
+    # vectorized, so under jax.vmap this callback is invoked once per batch
+    # element in a Python-level loop. Safe here since every input is already
+    # stop_gradient'd -- this primitive never needs a VJP rule regardless.
     mode_E_raw, mode_H_raw, eff_idx = jax.pure_callback(
         mode_helper,
         result_shape_dtype,
@@ -368,6 +372,7 @@ def compute_mode(
         jax.lax.stop_gradient(permeability_squeezed),
         jax.lax.stop_gradient(c0_um),
         jax.lax.stop_gradient(c1_um),
+        vmap_method="sequential",
     )
     mode_E = jnp.expand_dims(mode_E_raw, axis=propagation_axis + 1)
     mode_H = jnp.expand_dims(mode_H_raw, axis=propagation_axis + 1)
