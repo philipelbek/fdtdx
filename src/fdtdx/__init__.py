@@ -149,6 +149,7 @@ from fdtdx.objects.static_material.polygon import (
 )
 from fdtdx.objects.static_material.sphere import Sphere
 from fdtdx.objects.static_material.static import SimulationVolume, UniformMaterialObject
+from fdtdx.optimization.mma import MMAState, mma
 from fdtdx.utils.extend_pml import extend_material_to_pml
 from fdtdx.utils.logger import Logger
 from fdtdx.utils.plot_field_slice import plot_field_slice, plot_field_slice_component
@@ -216,6 +217,7 @@ __all__ = [
     "LinearReconstructEveryK",
     "Logger",
     "LorentzPole",
+    "MMAState",
     "Material",
     "ModeOverlapDetector",
     "ModePlaneSource",
@@ -302,6 +304,7 @@ __all__ = [
     "gds_layer_stack_from_component",
     "import_from_json",
     "metric_efficiency",
+    "mma",
     "normalize_by_energy",
     "normalize_by_poynting_flux",
     "place_objects",

@@ -78,6 +78,8 @@ API
     fdtdx.LorentzPole
     fdtdx.Material
     fdtdx.metric_efficiency
+    fdtdx.mma
+    fdtdx.MMAState
     fdtdx.ModeOverlapDetector
     fdtdx.ModePlaneSource
     fdtdx.normalize_by_energy

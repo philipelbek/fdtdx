@@ -74,6 +74,9 @@ dev = [
     "sphinx-design",
     "ty==0.0.66",
 ]
+mma = [
+    "mmapy>=0.3.1",
+]
 
 [tool.pyright]
 include = ["src", "examples", "checks", "test"]

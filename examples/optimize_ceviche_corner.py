@@ -12,6 +12,7 @@ Using gradient descend, the design parameters are continously updated in a loop.
 # Imports: standard libraries and required packages
 import sys
 import time
+from typing import Any, Literal, cast
 
 import chex
 import jax
@@ -19,12 +20,15 @@ import jax.numpy as jnp
 import optax
 import pytreeclass as tc
 from loguru import logger
+
 import fdtdx
+
 
 def main(
     seed: int,
     evaluation: bool,
     backward: bool,
+    optimizer: Literal["adam", "mma"] = "adam",
 ):
     # Log the random seed for reproducibility
     logger.info(f"{seed=}")
@@ -290,19 +294,28 @@ def main(
     # Set number of optimization epochs
     epochs = 501
     if not evaluation:
-        # Define learning rate schedule for fine-tuning
-        schedule_finetune: optax.Schedule = optax.warmup_cosine_decay_schedule(
-            init_value=1e-5,
-            peak_value=0.005,
-            end_value=0.0005,
-            warmup_steps=10,
-            decay_steps=round(0.9 * epochs),
-        )
-        # Create optimizer with schedule and wrap with MultiSteps for gradient accumulation
-        optimizer_finetune = optax.inject_hyperparams(optax.nadam)(learning_rate=schedule_finetune)
-        optimizer_finetune = optax.MultiSteps(optimizer_finetune, every_k_schedule=1)
+        # Typed as Any: the "adam" and "mma" branches below construct genuinely different
+        # optimizer/state types (optax.MultiSteps vs. fdtdx's MMA wrapper) that share the
+        # same .init()/.update() calling convention but no common nominal type.
+        optimizer_finetune: Any
+        opt_state_finetune: Any
+        if optimizer == "adam":
+            # Define learning rate schedule for fine-tuning
+            schedule_finetune: optax.Schedule = optax.warmup_cosine_decay_schedule(
+                init_value=1e-5,
+                peak_value=0.005,
+                end_value=0.0005,
+                warmup_steps=10,
+                decay_steps=round(0.9 * epochs),
+            )
+            # Create optimizer with schedule and wrap with MultiSteps for gradient accumulation
+            optimizer_finetune = optax.inject_hyperparams(optax.nadam)(learning_rate=schedule_finetune)
+            optimizer_finetune = cast(Any, optax.MultiSteps(optimizer_finetune, every_k_schedule=1))
+        else:
+            # MMA handles box constraints natively (no manual jnp.clip needed afterwards)
+            optimizer_finetune = cast(Any, fdtdx.mma(lower_bound=0.0, upper_bound=1.0))
         # Initialize optimizer state with current parameters
-        opt_state_finetune: optax.OptState = optimizer_finetune.init(params)
+        opt_state_finetune = optimizer_finetune.init(params)
     
     # Custom schedule for beta parameter (used in param transforms)
     def custom_schedule(idx: chex.Numeric) -> chex.Numeric:
@@ -427,10 +440,15 @@ def main(
 
             # Update optimizer state and parameters
             updates, opt_state_finetune = optimizer_finetune.update(grads, opt_state_finetune, params)
-            info["lr"] = opt_state_finetune.inner_opt_state.hyperparams["learning_rate"]
-            params = optax.apply_updates(params, updates)
-            # Clip parameters to [0, 1] range
-            params = jax.tree_util.tree_map(lambda p: jnp.clip(p, 0, 1), params)
+            if optimizer == "adam":
+                info["lr"] = opt_state_finetune.inner_opt_state.hyperparams["learning_rate"]
+            # optax's apply_updates stub widens the return type when `updates` comes from
+            # an Any-typed optimizer (see optimizer_finetune above); it's always really a
+            # ParameterContainer here, matching what apply_updates always did at runtime.
+            params = cast(fdtdx.ParameterContainer, optax.apply_updates(params, updates))
+            if optimizer == "adam":
+                # Clip parameters to [0, 1] range (MMA enforces this natively, no clip needed)
+                params = jax.tree_util.tree_map(lambda p: jnp.clip(p, 0, 1), params)
             # Log gradient and update norms
             info["grad_norm"] = optax.global_norm(grads)
             info["update_norm"] = optax.global_norm(updates)
@@ -466,15 +484,19 @@ def main(
 
 
 # Entry point: parse command line arguments and run main function
-if __name__ == "__main__": 
+if __name__ == "__main__":
     seed = 0
     evaluation = False
     backward = False
+    optimizer: Literal["adam", "mma"] = "adam"
     if len(sys.argv) > 1:
         seed = int(sys.argv[1])
         evaluation = False
+    if len(sys.argv) > 2 and sys.argv[2] == "mma":
+        optimizer = "mma"
     main(
         seed,
         evaluation=evaluation,
         backward=backward,
+        optimizer=optimizer,
     )
