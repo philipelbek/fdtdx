@@ -86,6 +86,7 @@ from fdtdx.objects.detectors.poynting_flux import (
 from fdtdx.objects.device.device import Device
 from fdtdx.objects.device.parameters.continuous import (
     GaussianSmoothing2D,
+    GaussianSmoothing3D,
     StandardToCustomRange,
     StandardToInversePermittivityRange,
     StandardToPlusOneMinusOneRange,
@@ -209,6 +210,7 @@ __all__ = [
     "GaussianPlaneSource",
     "GaussianPulseProfile",
     "GaussianSmoothing2D",
+    "GaussianSmoothing3D",
     "GaussianWindow",
     "GradientConfig",
     "GridCoordinateConstraint",

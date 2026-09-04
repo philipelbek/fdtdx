@@ -265,3 +265,128 @@ class GaussianSmoothing2D(SameShapeTypeParameterTransform):
         kernel = kernel / jnp.sum(kernel)
 
         return kernel
+
+
+@autoinit
+class GaussianSmoothing3D(SameShapeTypeParameterTransform):
+    """
+    Applies Gaussian smoothing to genuinely 3D parameter arrays.
+
+    Same construction as :class:`GaussianSmoothing2D` (pad each axis in turn, convolve with a
+    normalized isotropic Gaussian kernel, crop back to the original shape), extended to a true
+    third (z) axis instead of requiring a singleton z-voxel. Unlike ``GaussianSmoothing2D``, the
+    input is used as-is (no squeeze/expand_dims dance) since all three axes carry real extent.
+    """
+
+    #: Integer specifying the standard deviation of the Gaussian kernel in discrete units,
+    #: isotropic across all three axes.
+    std_discrete: int = frozen_field()
+
+    #: 2D array of shape ``(ny, nz)`` used as padding before axis 0. ``None`` falls back to edge-repeat.
+    padding_low_axis0: jax.Array | None = frozen_field(default=None)
+
+    #: 2D array of shape ``(ny, nz)`` used as padding after axis 0. ``None`` falls back to edge-repeat.
+    padding_high_axis0: jax.Array | None = frozen_field(default=None)
+
+    #: 2D array of shape ``(nx, nz)`` used as padding before axis 1. ``None`` falls back to edge-repeat.
+    padding_low_axis1: jax.Array | None = frozen_field(default=None)
+
+    #: 2D array of shape ``(nx, nz)`` used as padding after axis 1. ``None`` falls back to edge-repeat.
+    padding_high_axis1: jax.Array | None = frozen_field(default=None)
+
+    #: 2D array of shape ``(nx, ny)`` used as padding before axis 2. ``None`` falls back to edge-repeat.
+    padding_low_axis2: jax.Array | None = frozen_field(default=None)
+
+    #: 2D array of shape ``(nx, ny)`` used as padding after axis 2. ``None`` falls back to edge-repeat.
+    padding_high_axis2: jax.Array | None = frozen_field(default=None)
+
+    _fixed_input_type: ParameterType | Sequence[ParameterType] | None = frozen_private_field(
+        default=ParameterType.CONTINUOUS
+    )
+
+    def __call__(
+        self,
+        params: dict[str, jax.Array],
+        **kwargs,
+    ) -> dict[str, jax.Array]:
+        del kwargs
+        return {k: self._apply_smoothing(v) for k, v in params.items()}
+
+    def _apply_smoothing(self, x: jax.Array) -> jax.Array:
+        if x.ndim != 3:
+            raise ValueError(f"Expected 3D array, got shape {x.shape}")
+        nx, ny, nz = x.shape
+
+        kernel_size = 6 * self.std_discrete + 1
+        kernel = self._create_gaussian_kernel(kernel_size, self.std_discrete)
+        pad_w = kernel_size // 2
+
+        # Pad axis 0
+        if self.padding_low_axis0 is not None:
+            block_low0 = jnp.tile(self.padding_low_axis0[jnp.newaxis, :, :], (pad_w, 1, 1))
+        else:
+            block_low0 = jnp.tile(x[0:1, :, :], (pad_w, 1, 1))
+
+        if self.padding_high_axis0 is not None:
+            block_high0 = jnp.tile(self.padding_high_axis0[jnp.newaxis, :, :], (pad_w, 1, 1))
+        else:
+            block_high0 = jnp.tile(x[-1:, :, :], (pad_w, 1, 1))
+
+        arr = jnp.concatenate([block_low0, x, block_high0], axis=0)
+
+        # Pad axis 1; extend the (nx, nz) profiles with their own edge values to cover the
+        # corners created by axis-0 padding.
+        if self.padding_low_axis1 is not None:
+            corners_lo = jnp.tile(self.padding_low_axis1[0:1, :], (pad_w, 1))
+            corners_hi = jnp.tile(self.padding_low_axis1[-1:, :], (pad_w, 1))
+            extended = jnp.concatenate([corners_lo, self.padding_low_axis1, corners_hi], axis=0)
+            block_low1 = jnp.tile(extended[:, jnp.newaxis, :], (1, pad_w, 1))
+        else:
+            block_low1 = jnp.tile(arr[:, 0:1, :], (1, pad_w, 1))
+
+        if self.padding_high_axis1 is not None:
+            corners_lo = jnp.tile(self.padding_high_axis1[0:1, :], (pad_w, 1))
+            corners_hi = jnp.tile(self.padding_high_axis1[-1:, :], (pad_w, 1))
+            extended = jnp.concatenate([corners_lo, self.padding_high_axis1, corners_hi], axis=0)
+            block_high1 = jnp.tile(extended[:, jnp.newaxis, :], (1, pad_w, 1))
+        else:
+            block_high1 = jnp.tile(arr[:, -1:, :], (1, pad_w, 1))
+
+        arr = jnp.concatenate([block_low1, arr, block_high1], axis=1)
+
+        # Pad axis 2; extend the (nx, ny) profiles (edge-repeat) to cover the corners/edges
+        # created by axis-0/axis-1 padding.
+        if self.padding_low_axis2 is not None:
+            extended = jnp.pad(self.padding_low_axis2, ((pad_w, pad_w), (pad_w, pad_w)), mode="edge")
+            block_low2 = jnp.tile(extended[:, :, jnp.newaxis], (1, 1, pad_w))
+        else:
+            block_low2 = jnp.tile(arr[:, :, 0:1], (1, 1, pad_w))
+
+        if self.padding_high_axis2 is not None:
+            extended = jnp.pad(self.padding_high_axis2, ((pad_w, pad_w), (pad_w, pad_w)), mode="edge")
+            block_high2 = jnp.tile(extended[:, :, jnp.newaxis], (1, 1, pad_w))
+        else:
+            block_high2 = jnp.tile(arr[:, :, -1:], (1, 1, pad_w))
+
+        arr = jnp.concatenate([block_low2, arr, block_high2], axis=2)
+
+        # method="fft" avoids XLA's direct 3D conv_general_dilated lowering (cuDNN backend on
+        # some GPUs/driver versions fails to autotune true rank-3 spatial convolutions), and is
+        # also the more efficient choice for the fairly large (6*std_discrete+1)**3 kernel here.
+        result = jax.scipy.signal.convolve(arr, kernel, mode="same", method="fft")
+        result = result[pad_w : pad_w + nx, pad_w : pad_w + ny, pad_w : pad_w + nz]
+
+        return result.reshape(x.shape)
+
+    def _create_gaussian_kernel(self, size: int, sigma: float) -> jax.Array:
+        # Create a coordinate grid
+        coords = jnp.arange(-(size // 2), size // 2 + 1)
+        x, y, z = jnp.meshgrid(coords, coords, coords, indexing="ij")
+
+        # Create the Gaussian kernel
+        kernel = jnp.exp(-(x**2 + y**2 + z**2) / (2 * sigma**2))
+
+        # Normalize the kernel to sum to 1
+        kernel = kernel / jnp.sum(kernel)
+
+        return kernel
