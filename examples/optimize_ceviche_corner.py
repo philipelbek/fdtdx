@@ -293,6 +293,9 @@ def main(
 
     # Set number of optimization epochs
     epochs = 501
+    # Flux ratio that maps to a loss of zero in the log-scaled objective below; tune to the
+    # target efficiency for this design
+    reference_efficiency = 0.5
     if not evaluation:
         # Typed as Any: the "adam" and "mma" branches below construct genuinely different
         # optimizer/state types (optax.MultiSteps vs. fdtdx's MMA wrapper) that share the
@@ -381,6 +384,8 @@ def main(
         
         # Objective is the flux ratio (higher is better)
         objective = total_flux_ratio
+        # Log-scale against the reference efficiency: 0 at the reference, negative once past it
+        loss = fdtdx.log_scaled_objective(objective, reference_efficiency)
 
         # Optionally run backward simulation for gradient calculation
         if evaluation and backward:
@@ -401,8 +406,8 @@ def main(
             "objective": objective,
             **info,
         }
-        # Return negative objective (for minimization) and auxiliary info
-        return -objective, (arrays, new_info) 
+        # Return log-scaled loss (for minimization) and auxiliary info
+        return loss, (arrays, new_info)
 
     # Compile loss function with JAX JIT for fast execution
     compile_start_time = time.time()
@@ -456,8 +461,9 @@ def main(
         # Compute runtime for this epoch
         runtime_delta = time.time() - run_start_time
         info["runtime"] = runtime_delta
-        # Compute attenuation metric for logging
-        info["attenuation"] = 10 * jnp.log10(-loss)
+        # Compute attenuation metric for logging (raw efficiency, independent of the loss's
+        # log-scaling reference)
+        info["attenuation"] = 10 * jnp.log10(info["objective"])
 
         # Log compile and runtime info during evaluation
         if evaluation:
