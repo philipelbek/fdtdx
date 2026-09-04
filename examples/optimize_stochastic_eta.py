@@ -223,6 +223,9 @@ def main(
     # gradient across all K samples automatically -- no manual gradient bookkeeping needed.
     num_samples = 4
     aggregation_p = 1.0
+    # Flux ratio that maps to a loss of zero in the log-scaled objective below; tune to the
+    # target efficiency for this design
+    reference_efficiency = 0.5
 
     if not evaluation:
         schedule_finetune: optax.Schedule = optax.warmup_cosine_decay_schedule(
@@ -283,13 +286,17 @@ def main(
         # weighted_p_mean requires strictly positive objectives; the flux ratio can be exactly
         # zero for a fully-dark initial random structure, which is expected early in training
         # and simply zeroes that sample's gradient contribution (see weighted_p_mean's eps floor).
+        # Samples are aggregated on the raw (linear) objective first; log-scaling is applied once,
+        # after aggregation, exactly as in the deterministic case -- applying it per-sample first
+        # would change what the p-mean's `p` exponent effectively means.
         combined_objective = fdtdx.weighted_p_mean(objectives, p=aggregation_p)
+        loss = fdtdx.log_scaled_objective(combined_objective, reference_efficiency)
 
         new_info = {
             "sample_objectives": objectives,
             "combined_objective": combined_objective,
         }
-        return -combined_objective, (final_arrays, new_info)
+        return loss, (final_arrays, new_info)
 
     compile_start_time = time.time()
     print("Started Compilation...")
@@ -325,7 +332,8 @@ def main(
 
         runtime_delta = time.time() - run_start_time
         info["runtime"] = runtime_delta
-        info["attenuation"] = 10 * jnp.log10(-loss)
+        # Raw attenuation, independent of the loss's log-scaling reference
+        info["attenuation"] = 10 * jnp.log10(info["combined_objective"])
 
         if evaluation:
             logger.info(f"{compile_delta_time=}")
