@@ -79,6 +79,7 @@ API
     fdtdx.Material
     fdtdx.metric_efficiency
     fdtdx.mma
+    fdtdx.mma_unconstrained
     fdtdx.MMAState
     fdtdx.ModeOverlapDetector
     fdtdx.ModePlaneSource

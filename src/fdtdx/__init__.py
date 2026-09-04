@@ -150,7 +150,7 @@ from fdtdx.objects.static_material.polygon import (
 )
 from fdtdx.objects.static_material.sphere import Sphere
 from fdtdx.objects.static_material.static import SimulationVolume, UniformMaterialObject
-from fdtdx.optimization.mma import MMAState, mma
+from fdtdx.optimization.mma import MMAState, mma, mma_unconstrained
 from fdtdx.utils.extend_pml import extend_material_to_pml
 from fdtdx.utils.logger import Logger
 from fdtdx.utils.plot_field_slice import plot_field_slice, plot_field_slice_component
@@ -308,6 +308,7 @@ __all__ = [
     "log_scaled_objective",
     "metric_efficiency",
     "mma",
+    "mma_unconstrained",
     "normalize_by_energy",
     "normalize_by_poynting_flux",
     "place_objects",
