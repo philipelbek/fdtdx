@@ -23,7 +23,7 @@ from fdtdx.core.jax.pytrees import (
     frozen_private_field,
     private_field,
 )
-from fdtdx.core.physics.losses import metric_efficiency, weighted_p_mean
+from fdtdx.core.physics.losses import log_scaled_objective, metric_efficiency, weighted_p_mean
 from fdtdx.core.physics.metrics import (
     compute_energy,
     compute_integrated_power,
@@ -303,6 +303,7 @@ __all__ = [
     "gds_layer_stack",
     "gds_layer_stack_from_component",
     "import_from_json",
+    "log_scaled_objective",
     "metric_efficiency",
     "mma",
     "normalize_by_energy",

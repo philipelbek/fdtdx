@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 
-from fdtdx.core.physics.losses import metric_efficiency, weighted_p_mean
+from fdtdx.core.physics.losses import log_scaled_objective, metric_efficiency, weighted_p_mean
 
 # ──────────────────────────────────────────────────────────────
 # weighted_p_mean
@@ -84,6 +84,44 @@ def test_p_mean_gradient_matches_closed_form_at_p1():
     values = jnp.array([2.0, 6.0])
     grad = jax.grad(lambda v: weighted_p_mean(v, p=1.0).sum())(values)
     assert jnp.allclose(grad, jnp.array([0.5, 0.5]))
+
+
+# ──────────────────────────────────────────────────────────────
+# log_scaled_objective
+# ──────────────────────────────────────────────────────────────
+
+
+def test_log_scaled_objective_zero_at_reference():
+    """Loss is exactly zero when efficiency equals the reference."""
+    result = log_scaled_objective(jnp.array(0.5), reference_efficiency=0.5)
+    assert jnp.allclose(result, 0.0)
+
+
+def test_log_scaled_objective_negative_above_reference():
+    """Loss goes negative once efficiency exceeds the reference (better than target)."""
+    result = log_scaled_objective(jnp.array(5.0), reference_efficiency=0.5)
+    # -log10(5.0 / 0.5) = -log10(10) = -1
+    assert jnp.allclose(result, -1.0)
+
+
+def test_log_scaled_objective_positive_below_reference():
+    """Loss is positive when efficiency falls short of the reference."""
+    result = log_scaled_objective(jnp.array(0.05), reference_efficiency=0.5)
+    # -log10(0.05 / 0.5) = -log10(0.1) = 1
+    assert jnp.allclose(result, 1.0)
+
+
+def test_log_scaled_objective_eps_floor_at_zero_efficiency():
+    """A fully-dark (zero) efficiency is floored by eps, not NaN/-inf."""
+    result = log_scaled_objective(jnp.array(0.0), reference_efficiency=0.5, eps=1e-12)
+    assert jnp.isfinite(result)
+
+
+def test_log_scaled_objective_gradient_scales_with_inverse_efficiency():
+    """Gradient of -log10(eff / ref) w.r.t. eff is -1 / (eff * ln(10))."""
+    eff = jnp.array(2.0)
+    grad = jax.grad(lambda e: log_scaled_objective(e, reference_efficiency=0.5))(eff)
+    assert jnp.allclose(grad, -1.0 / (eff * jnp.log(10.0)))
 
 
 # ──────────────────────────────────────────────────────────────

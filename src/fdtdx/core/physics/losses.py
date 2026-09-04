@@ -46,6 +46,37 @@ def weighted_p_mean(
     return jnp.where(is_zero, geometric_mean, p_mean)
 
 
+def log_scaled_objective(
+    efficiency: jax.Array,
+    reference_efficiency: float | jax.Array,
+    eps: float = 1e-12,
+) -> jax.Array:
+    """Rescale a raw efficiency into a log-ratio loss against a reference efficiency.
+
+    Computes ``-log10(efficiency / reference_efficiency)``: zero when ``efficiency`` equals
+    ``reference_efficiency``, negative once it exceeds it and positive while it falls short, so
+    minimizing this value drives the design past the reference. Because the gradient scales with
+    ``1 / efficiency``, this weighs relative improvement rather than absolute efficiency -- useful
+    when comparing or combining objectives that span multiple orders of magnitude.
+
+    When aggregating multiple stochastic samples (e.g. via ``weighted_p_mean``), apply this once
+    to the already-aggregated scalar rather than to each sample individually -- log-scaling per
+    sample before aggregation changes what the aggregation's ``p`` exponent effectively means.
+
+    Args:
+        efficiency (jax.Array): Raw (already-aggregated, if applicable) efficiency, typically in
+            ``[0, 1]`` but not required to be.
+        reference_efficiency (float | jax.Array): Efficiency value that maps to a loss of zero.
+        eps (float): Floor applied to ``efficiency`` before taking the log, to keep the result
+            finite for a fully-dark/zero-efficiency design. Defaults to 1e-12.
+
+    Returns:
+        jax.Array: Scalar log-scaled loss, decreasing as efficiency improves past the reference.
+    """
+    safe_efficiency = jnp.clip(efficiency, eps, None)
+    return -jnp.log10(safe_efficiency / reference_efficiency)
+
+
 def metric_efficiency(
     detector_states: dict[str, dict[str, jax.Array]],
     in_names: Sequence[str],
