@@ -150,7 +150,7 @@ from fdtdx.objects.static_material.polygon import (
 )
 from fdtdx.objects.static_material.sphere import Sphere
 from fdtdx.objects.static_material.static import SimulationVolume, UniformMaterialObject
-from fdtdx.optimization.mma import MMAState, mma, mma_unconstrained
+from fdtdx.optimization.mma import MMAState, mma, mma_unconstrained, steepest_descent
 from fdtdx.utils.extend_pml import extend_material_to_pml
 from fdtdx.utils.logger import Logger
 from fdtdx.utils.plot_field_slice import plot_field_slice, plot_field_slice_component
@@ -323,6 +323,7 @@ __all__ = [
     "run_fdtd",
     "setup_sparams_simulation",
     "sources_from_gds_ports",
+    "steepest_descent",
     "unfold_array",
     "unfold_detector_states",
     "unfold_fields",

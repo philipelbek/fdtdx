@@ -131,6 +131,7 @@ API
     fdtdx.StandardToCustomRange
     fdtdx.StandardToInversePermittivityRange
     fdtdx.StandardToPlusOneMinusOneRange
+    fdtdx.steepest_descent
     fdtdx.SubpixelSmoothedProjection
     fdtdx.TanhProjection
     fdtdx.TemporalProfile

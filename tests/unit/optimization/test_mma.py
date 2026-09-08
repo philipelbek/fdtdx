@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from fdtdx.optimization.mma import mma, mma_unconstrained
+from fdtdx.optimization.mma import mma, mma_unconstrained, steepest_descent
 
 # ── Convergence (m=0, pure box-constrained quadratic) ────────
 
@@ -48,6 +48,25 @@ def test_mma_unconstrained_converges_on_bound_constrained_quadratic():
     assert jnp.allclose(params["device"], target, atol=1e-2)
 
 
+def test_steepest_descent_converges_on_bound_constrained_quadratic():
+    """Same convergence check as above, for the normalized-steepest-descent variant."""
+    target = jnp.array([0.2, 0.8, 0.5, 0.3, 0.65])
+    params = {"device": 0.5 * jnp.ones((5,))}
+
+    optimizer = steepest_descent(lower_bound=0.0, upper_bound=1.0, move=0.1)
+    state = optimizer.init(params)
+
+    def loss(p):
+        return jnp.sum((p["device"] - target) ** 2)
+
+    for _ in range(200):
+        grads = jax.grad(loss)(params)
+        updates, state = optimizer.update(grads, state, params)
+        params = optax.apply_updates(params, updates)
+
+    assert jnp.allclose(params["device"], target, atol=1e-2)
+
+
 # ── Native box-bound handling (no manual clipping needed) ────
 
 
@@ -78,6 +97,27 @@ def test_mma_unconstrained_respects_bounds_when_target_outside_range():
     params = {"device": 0.5 * jnp.ones((4,))}
 
     optimizer = mma_unconstrained(lower_bound=0.0, upper_bound=1.0, move=0.5)
+    state = optimizer.init(params)
+
+    def loss(p):
+        return jnp.sum((p["device"] - target) ** 2)
+
+    for _ in range(50):
+        grads = jax.grad(loss)(params)
+        updates, state = optimizer.update(grads, state, params)
+        params = optax.apply_updates(params, updates)
+        assert jnp.all(params["device"] >= -1e-8)
+        assert jnp.all(params["device"] <= 1.0 + 1e-8)
+
+    assert jnp.allclose(params["device"], jnp.array([0.0, 1.0, 0.0, 1.0]), atol=5e-2)
+
+
+def test_steepest_descent_respects_bounds_when_target_outside_range():
+    """Same in-bounds check as above, for the normalized-steepest-descent variant."""
+    target = jnp.array([-1.0, 2.0, -0.5, 1.5])
+    params = {"device": 0.5 * jnp.ones((4,))}
+
+    optimizer = steepest_descent(lower_bound=0.0, upper_bound=1.0, move=0.5)
     state = optimizer.init(params)
 
     def loss(p):
@@ -140,6 +180,28 @@ def test_mma_unconstrained_preserves_nested_pytree_structure_and_dtype():
         assert leaf_new.dtype == leaf_old.dtype
 
 
+def test_steepest_descent_preserves_nested_pytree_structure_and_dtype():
+    """Same pytree round-trip check as above, for the normalized-steepest-descent variant."""
+    params = {
+        "device_a": jnp.full((3, 3), 0.5, dtype=jnp.float32),
+        "device_b": {
+            "params": jnp.full((2, 2), 0.5, dtype=jnp.float32),
+            "eta": jnp.full((2, 2), 0.3, dtype=jnp.float32),
+        },
+    }
+    grads = jax.tree_util.tree_map(lambda p: jnp.ones_like(p) * 0.1, params)
+
+    optimizer = steepest_descent(lower_bound=0.0, upper_bound=1.0)
+    state = optimizer.init(params)
+    updates, state = optimizer.update(grads, state, params)
+    new_params = optax.apply_updates(params, updates)
+
+    assert jax.tree_util.tree_structure(new_params) == jax.tree_util.tree_structure(params)
+    for leaf_new, leaf_old in zip(jax.tree_util.tree_leaves(new_params), jax.tree_util.tree_leaves(params)):
+        assert leaf_new.shape == leaf_old.shape
+        assert leaf_new.dtype == leaf_old.dtype
+
+
 # ── optax.apply_updates compatibility ─────────────────────────
 
 
@@ -164,6 +226,21 @@ def test_mma_unconstrained_move_limit_bounds_first_step():
     grads = {"device": jnp.array([10.0, -10.0, 10.0], dtype=jnp.float32)}
 
     optimizer = mma_unconstrained(lower_bound=0.0, upper_bound=1.0, move=0.1)
+    state = optimizer.init(params)
+    updates, state = optimizer.update(grads, state, params)
+    new_params = optax.apply_updates(params, updates)
+
+    assert jnp.all(new_params["device"] >= 0.5 - 0.1 - 1e-6)
+    assert jnp.all(new_params["device"] <= 0.5 + 0.1 + 1e-6)
+
+
+def test_steepest_descent_move_limit_bounds_first_step():
+    """move=0.1 caps how far the very first update can go -- an absolute delta here,
+    unlike mma_unconstrained's move which is a fraction of (upper_bound - lower_bound)."""
+    params = {"device": jnp.full((3,), 0.5, dtype=jnp.float32)}
+    grads = {"device": jnp.array([10.0, -10.0, 10.0], dtype=jnp.float32)}
+
+    optimizer = steepest_descent(lower_bound=0.0, upper_bound=1.0, move=0.1)
     state = optimizer.init(params)
     updates, state = optimizer.update(grads, state, params)
     new_params = optax.apply_updates(params, updates)
@@ -228,3 +305,31 @@ def test_mmasub_respects_general_constraint():
         x = xmma
 
     assert np.isclose(x.item(), 0.3, atol=1e-2)
+
+
+def test_steepest_descent_resets_gradient_at_bound_and_normalizes_direction():
+    """Directly exercises steps 1-5 of SteepestDescent.m for a 2-D case at iter=1: the
+    component already sitting on its upper bound with a gradient pushing further out
+    must not move (D22), and the other component must move by exactly `move` after
+    normalization by the max |gradient| (D23/D24)."""
+    from fdtdx.optimization.steepest_descent import SteepestDescent
+
+    n = 2
+    xval = np.array([[1.0], [0.5]])  # first variable already at its upper bound
+    xmin = np.array([[0.0], [0.0]])
+    xmax = np.array([[1.0], [1.0]])
+    df0dx = np.array([[-1.0], [2.0]])  # descent direction S = -df0dx = [1.0, -2.0]
+    low = xmin.copy()
+    upp = xmax.copy()
+    move = 0.1
+
+    xmma, low_out, upp_out = SteepestDescent(n, 1, xval, xmin, xmax, xval, xval, 0.0, df0dx, low, upp, move)
+
+    # iter<2.5 branch: delta = move for every element.
+    assert np.allclose(low_out, xval - move)
+    assert np.allclose(upp_out, xval + move)
+    # S[0] = 1.0 > 0 while xval[0] = xmax[0] -> reset to 0 (D22) -> stays at the bound.
+    assert np.isclose(xmma[0, 0], 1.0)
+    # S[1] = -2.0 is the (only) surviving, and hence max-|.|, component -> normalized to
+    # -1.0, moved by the full move limit.
+    assert np.isclose(xmma[1, 0], 0.5 - move)

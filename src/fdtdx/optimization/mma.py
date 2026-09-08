@@ -1,18 +1,21 @@
-"""MMA (Method of Moving Asymptotes, Svanberg 1987/2002) optimizers, wrapped as
+"""Box-constrained optimizers (MMA and steepest descent), wrapped as
 optax.GradientTransformationExtraArgs so they are drop-in replacements for optax.adam(...)
 in fdtdx training loops.
 
-Two variants are provided, both implemented natively in fdtdx (see
-fdtdx.optimization.mmasub, fdtdx.optimization.mmasub_unconst, fdtdx.optimization.subsolv
-for the underlying line-for-line ports of Svanberg's original MATLAB code -- no
-third-party MMA package is required):
+Three variants are provided, all implemented natively in fdtdx (see
+fdtdx.optimization.mmasub, fdtdx.optimization.mmasub_unconst, fdtdx.optimization.subsolv,
+fdtdx.optimization.steepest_descent for the underlying line-for-line ports of the original
+MATLAB code -- no third-party package is required):
 
-- `mma`: The general Svanberg subproblem solved by a primal-dual Newton method
-  (`subsolv`). Supports general inequality constraints (n_constraints > 0) in addition
-  to the box constraints.
-- `mma_unconstrained`: The box-constrained-only (m=0) variant, whose subproblem is
+- `mma`: The general Svanberg (Method of Moving Asymptotes, 1987/2002) subproblem
+  solved by a primal-dual Newton method (`subsolv`). Supports general inequality
+  constraints (n_constraints > 0) in addition to the box constraints.
+- `mma_unconstrained`: The box-constrained-only (m=0) MMA variant, whose subproblem is
   separable and solved in closed form -- no Newton iterations, and an explicit `move`
   limit per step (mmasub.m's move limit is hardcoded to 1.0, i.e. unused in practice).
+- `steepest_descent`: A simplified modified steepest descent method (Da Silva et al.),
+  box-constrained only, with an adaptive per-element move limit and a unitary step
+  length (no line search) -- see `steepest_descent.SteepestDescent`.
 """
 
 from dataclasses import dataclass
@@ -26,11 +29,13 @@ from jax.flatten_util import ravel_pytree
 from fdtdx.fdtd.container import ParameterContainer
 from fdtdx.optimization.mmasub import mmasub
 from fdtdx.optimization.mmasub_unconst import mmasub_unconst
+from fdtdx.optimization.steepest_descent import SteepestDescent
 
 
 @dataclass(frozen=True)
 class MMAState:
-    """Optimizer state shared by the `mma` and `mma_unconstrained` optimizers.
+    """Optimizer state shared by the `mma`, `mma_unconstrained`, and `steepest_descent`
+    optimizers.
 
     Deliberately a plain Python dataclass rather than a jax pytree / fdtdx TreeClass.
     Unlike ADAM's optax state (which lives inside a jax.jit-compiled step and must be
@@ -40,8 +45,9 @@ class MMAState:
     through jax.jit/vmap/grad, so there is nothing to gain from pytree registration.
 
     Only carries quantities that vary between calls to update(); static configuration
-    (bounds, move limit) is closed over by `mma()`/`mma_unconstrained()`'s
-    `init_fn`/`update_fn`, mirroring optax's own convention (e.g. `optax.scale_by_adam`
+    (bounds, move limit) is closed over by `mma()`/`mma_unconstrained()`/
+    `steepest_descent()`'s `init_fn`/`update_fn`, mirroring optax's own convention (e.g.
+    `optax.scale_by_adam`
     closes over b1/b2/eps and stores only mu/nu/count in its state).
 
     Attributes:
@@ -272,6 +278,106 @@ def mma_unconstrained(
         new_iter = state.iter + 1
 
         xmma, low, upp = mmasub_unconst(
+            n,
+            new_iter,
+            xval,
+            xmin,
+            xmax,
+            state.xold1,
+            state.xold2,
+            f0val,
+            df0dx,
+            state.low,
+            state.upp,
+            move,
+        )
+
+        # See the equivalent conversion in mma()'s update_fn above for why this omits an
+        # explicit dtype= (avoids a spurious float64-truncation UserWarning).
+        new_params = unravel_fn(jnp.asarray(xmma.reshape(-1)))
+        updates = jax.tree_util.tree_map(lambda new, old: new - old, new_params, params)
+        new_state = MMAState(iter=new_iter, xold1=xval, xold2=state.xold1, low=low, upp=upp)
+        return updates, new_state
+
+    # optax's bundled type stubs assume state is Array-like/iterable; MMAState is a plain
+    # (deliberately non-pytree) dataclass, which optax's real runtime accepts as an opaque
+    # state object just fine -- see MMAState's docstring for why it isn't a pytree.
+    return optax.GradientTransformationExtraArgs(init_fn, update_fn)  # type: ignore
+
+
+def steepest_descent(
+    lower_bound: float | ParameterContainer = 0.0,
+    upper_bound: float | ParameterContainer = 1.0,
+    move: float = 0.1,
+) -> optax.GradientTransformationExtraArgs:
+    """Steepest-descent optimizer (Da Silva et al., simplified), drop-in compatible with optax.
+
+    Every iteration is solved by `fdtdx.optimization.steepest_descent.SteepestDescent`, a
+    faithful port of the modified steepest descent method: a normalized, gradient-reset
+    descent direction (so a variable sitting on a bound is not pushed further outside
+    it) taken with a unitary step length (no line search), clipped to an adaptive,
+    per-element move limit intersected with the physical box bounds. Like
+    `mma_unconstrained`, it supports box constraints only (no `fval`/`dfdx`/general
+    inequality constraints) and needs no manual clipping afterwards.
+
+    Same `.init(params)` / `.update(grads, state, params)` / `optax.apply_updates(...)`
+    calling convention as `mma`/`mma_unconstrained`/optax.adam(...).
+
+    Args:
+        lower_bound (float | ParameterContainer): The TRUE physical lower box bound --
+            unlike `mma`/`mma_unconstrained`, this must NOT be pre-narrowed by `move`
+            (SteepestDescent's own adaptive move limit needs the real bound to reset
+            gradients at, per eq. (D22)/(D24) -- see that module's docstring). Either a
+            scalar (broadcast to every parameter) or a pytree with the exact same
+            structure and leaf shapes as `params`. Defaults to 0.0.
+        upper_bound (float | ParameterContainer): The TRUE physical upper box bound,
+            same rules as `lower_bound`. Defaults to 1.0.
+        move (float): Maximum (and initial) per-element move limit delta_e, in the same
+            (absolute, not fraction-of-range) units as `params` -- unlike
+            `mma_unconstrained`'s `move`, this is not scaled by
+            (upper_bound - lower_bound). Defaults to 0.1.
+
+    Returns:
+        optax.GradientTransformationExtraArgs: An optax-compatible optimizer.
+    """
+
+    def init_fn(params: ParameterContainer) -> MMAState:
+        flat_params, _ = ravel_pytree(params)
+        n = flat_params.shape[0]
+        xval = np.asarray(flat_params, dtype=np.float64).reshape(n, 1)
+        xmin = _flatten_bound(n, lower_bound, "lower_bound")
+        xmax = _flatten_bound(n, upper_bound, "upper_bound")
+        return MMAState(iter=0, xold1=xval, xold2=xval, low=xmin, upp=xmax)
+
+    def update_fn(
+        grads: ParameterContainer,
+        state: MMAState,
+        params: ParameterContainer | None = None,
+        **extra_args,
+    ) -> tuple[ParameterContainer, MMAState]:
+        del extra_args  # accepted only for the GradientTransformationExtraArgs protocol
+        if params is None:
+            raise ValueError(
+                "steepest_descent() requires `params` at every update() call, e.g. "
+                "optimizer.update(grads, opt_state, params) -- its move-limit update "
+                "needs the current design point, not just the gradient."
+            )
+
+        flat_params, unravel_fn = ravel_pytree(params)
+        flat_grads, _ = ravel_pytree(grads)
+        n = flat_params.shape[0]
+
+        xval = np.asarray(flat_params, dtype=np.float64).reshape(n, 1)
+        df0dx = np.asarray(flat_grads, dtype=np.float64).reshape(n, 1)
+        xmin = _flatten_bound(n, lower_bound, "lower_bound")
+        xmax = _flatten_bound(n, upper_bound, "upper_bound")
+
+        # f0val is not used by SteepestDescent, kept only for interface compatibility
+        # with mmasub_unconst -- see that function's docstring.
+        f0val = 0.0
+        new_iter = state.iter + 1
+
+        xmma, low, upp = SteepestDescent(
             n,
             new_iter,
             xval,
