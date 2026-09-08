@@ -23,6 +23,12 @@ from fdtdx.core.jax.pytrees import (
     frozen_private_field,
     private_field,
 )
+from fdtdx.core.physics.connectivity import (
+    connectivity_penalty,
+    renormalize,
+    softplus_combine,
+    solve_steady_heat,
+)
 from fdtdx.core.physics.losses import log_scaled_objective, metric_efficiency, weighted_p_mean
 from fdtdx.core.physics.metrics import (
     compute_energy,
@@ -304,6 +310,7 @@ __all__ = [
     "gaussian_mode_function",
     "gds_layer_stack",
     "gds_layer_stack_from_component",
+    "connectivity_penalty",
     "import_from_json",
     "log_scaled_objective",
     "metric_efficiency",
@@ -319,9 +326,12 @@ __all__ = [
     "plot_setup",
     "plot_setup_from_side",
     "private_field",
+    "renormalize",
     "resolve_object_constraints",
     "run_fdtd",
     "setup_sparams_simulation",
+    "softplus_combine",
+    "solve_steady_heat",
     "sources_from_gds_ports",
     "steepest_descent",
     "unfold_array",
