@@ -248,7 +248,11 @@ class GaussianSmoothing2D(SameShapeTypeParameterTransform):
 
         arr = jnp.concatenate([block_low1, arr, block_high1], axis=1)
 
-        result = jax.scipy.signal.convolve(arr, kernel, mode="same")
+        # method="fft" avoids XLA's direct 2D conv_general_dilated lowering (cuDNN backend on
+        # some GPUs/driver versions fails to autotune this convolution -- e.g. cuDNN status 5003,
+        # "All configs failed during profiling"), and is also the more efficient choice for the
+        # fairly large (6*std_discrete+1)**2 kernel here. Mirrors GaussianSmoothing3D below.
+        result = jax.scipy.signal.convolve(arr, kernel, mode="same", method="fft")
         result = result[pad_w : pad_w + nx, pad_w : pad_w + ny]
 
         return result.reshape(x.shape)
