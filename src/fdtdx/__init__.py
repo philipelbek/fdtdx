@@ -27,6 +27,7 @@ from fdtdx.core.physics.connectivity import (
     connectivity_penalty,
     renormalize,
     softplus_combine,
+    solve_nonlinear_steady_heat,
     solve_steady_heat,
 )
 from fdtdx.core.physics.losses import log_scaled_objective, metric_efficiency, weighted_p_mean
@@ -293,6 +294,7 @@ __all__ = [
     "compute_pole_coefficients_per_axis",
     "compute_pole_coefficients_tensor",
     "compute_poynting_flux",
+    "connectivity_penalty",
     "detectors_from_gds_ports",
     "export_arrays_snapshot_to_vti",
     "export_json",
@@ -310,7 +312,6 @@ __all__ = [
     "gaussian_mode_function",
     "gds_layer_stack",
     "gds_layer_stack_from_component",
-    "connectivity_penalty",
     "import_from_json",
     "log_scaled_objective",
     "metric_efficiency",
@@ -331,6 +332,7 @@ __all__ = [
     "run_fdtd",
     "setup_sparams_simulation",
     "softplus_combine",
+    "solve_nonlinear_steady_heat",
     "solve_steady_heat",
     "sources_from_gds_ports",
     "steepest_descent",
