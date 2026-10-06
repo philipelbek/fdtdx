@@ -1,56 +1,72 @@
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import jax
 import jax.numpy as jnp
 
 
-def _face_conductances(kappa: jax.Array, axis: int, eps: float) -> tuple[jax.Array, jax.Array]:
+def _is_periodic(periodic_axes: Sequence[bool] | None, axis: int) -> bool:
+    """Whether `axis` wraps. `None` means "no axis wraps", the original behavior."""
+    return False if periodic_axes is None else bool(periodic_axes[axis])
+
+
+def _face_conductances(kappa: jax.Array, axis: int, eps: float, periodic: bool = False) -> tuple[jax.Array, jax.Array]:
     """Harmonic-mean conductance of the two faces of every voxel along `axis`.
 
     Padding `kappa` with zeros at the array boundary gives a zero-conductance "ghost" neighbor
     there, which the harmonic mean turns into a zero-flux (Neumann) boundary automatically --
     no separate boundary-condition code path is needed.
+
+    With `periodic=True` the padding wraps instead, so the ghost neighbor is the real material at
+    the opposite face and flux crosses the boundary as it physically does in a periodic unit cell.
+    A Neumann wall on a periodic axis is not a harmless approximation: an island attached only
+    through the cell boundary reads as isolated, and since an isolated island's temperature is
+    bounded solely by `kappa_min` a handful of such voxels can dominate the integral.
     """
     k = jnp.moveaxis(kappa, axis, 0)
     n = k.shape[0]
-    kp = jnp.pad(k, [(1, 1)] + [(0, 0)] * (k.ndim - 1))
+    pad_mode = "wrap" if periodic else "constant"
+    kp = jnp.pad(k, [(1, 1)] + [(0, 0)] * (k.ndim - 1), mode=pad_mode)
     g_left = 2.0 * kp[0:n] * kp[1 : n + 1] / (kp[0:n] + kp[1 : n + 1] + eps)
     g_right = 2.0 * kp[1 : n + 1] * kp[2 : n + 2] / (kp[1 : n + 1] + kp[2 : n + 2] + eps)
     return jnp.moveaxis(g_left, 0, axis), jnp.moveaxis(g_right, 0, axis)
 
 
-def _shifted_neighbors(u: jax.Array, axis: int) -> tuple[jax.Array, jax.Array]:
+def _shifted_neighbors(u: jax.Array, axis: int, periodic: bool = False) -> tuple[jax.Array, jax.Array]:
     """Left/right neighbor values of `u` along `axis`, edge-padded at the array boundary.
 
-    The boundary's edge-padded value is arbitrary (never inspected on its own) since it is
-    always multiplied by the zero boundary conductance from `_face_conductances`.
+    On a bounded axis the boundary's edge-padded value is arbitrary (never inspected on its own)
+    since it is always multiplied by the zero boundary conductance from `_face_conductances`. On a
+    periodic axis it wraps, and then it genuinely is the neighbor's value.
     """
     v = jnp.moveaxis(u, axis, 0)
     n = v.shape[0]
-    vp = jnp.pad(v, [(1, 1)] + [(0, 0)] * (v.ndim - 1), mode="edge")
+    vp = jnp.pad(v, [(1, 1)] + [(0, 0)] * (v.ndim - 1), mode="wrap" if periodic else "edge")
     left = jnp.moveaxis(vp[0:n], 0, axis)
     right = jnp.moveaxis(vp[2 : n + 2], 0, axis)
     return left, right
 
 
-def _diffusion_apply(u: jax.Array, kappa: jax.Array, eps: float) -> jax.Array:
+def _diffusion_apply(
+    u: jax.Array, kappa: jax.Array, eps: float, periodic_axes: Sequence[bool] | None = None
+) -> jax.Array:
     """Matrix-free application of the finite-volume operator `-div(kappa * grad(u))`."""
     total = jnp.zeros_like(u)
     for axis in range(u.ndim):
-        g_left, g_right = _face_conductances(kappa, axis, eps)
-        u_left, u_right = _shifted_neighbors(u, axis)
+        periodic = _is_periodic(periodic_axes, axis)
+        g_left, g_right = _face_conductances(kappa, axis, eps, periodic)
+        u_left, u_right = _shifted_neighbors(u, axis, periodic)
         total = total + g_left * (u - u_left) + g_right * (u - u_right)
     return total
 
 
-def _diffusion_diagonal(kappa: jax.Array, eps: float) -> jax.Array:
+def _diffusion_diagonal(kappa: jax.Array, eps: float, periodic_axes: Sequence[bool] | None = None) -> jax.Array:
     """Diagonal of the same operator, i.e. the total conductance out of each voxel -- used as a
     cheap Jacobi preconditioner (important given the large kappa_max/kappa_min contrast)."""
     total = jnp.zeros_like(kappa)
     for axis in range(kappa.ndim):
-        g_left, g_right = _face_conductances(kappa, axis, eps)
+        g_left, g_right = _face_conductances(kappa, axis, eps, _is_periodic(periodic_axes, axis))
         total = total + g_left + g_right
     return total
 
@@ -60,6 +76,7 @@ def solve_steady_heat(
     source: jax.Array,
     sink_mask: jax.Array,
     *,
+    periodic_axes: Sequence[bool] | None = None,
     tol: float = 1e-6,
     atol: float = 0.0,
     maxiter: int = 1000,
@@ -87,6 +104,8 @@ def solve_steady_heat(
             rank), strictly positive.
         source (jax.Array): Per-voxel heat-generation rate, same shape as `conductivity`.
         sink_mask (jax.Array): Boolean array, same shape, True at voxels held at u=0.
+        periodic_axes (Sequence[bool] | None): Per-axis flag; True makes that axis wrap instead of
+            meeting a zero-flux wall. `None` (default) means every axis is bounded.
         tol (float): Relative tolerance passed to `cg`. Defaults to 1e-6.
         atol (float): Absolute tolerance passed to `cg`. Defaults to 0.0.
         maxiter (int): Maximum CG iterations. Defaults to 1000.
@@ -99,11 +118,11 @@ def solve_steady_heat(
 
     def A(u: jax.Array) -> jax.Array:
         u_bc = jnp.where(sink_mask, 0.0, u)
-        diffused = _diffusion_apply(u_bc, conductivity, eps)
+        diffused = _diffusion_apply(u_bc, conductivity, eps, periodic_axes)
         return jnp.where(sink_mask, u, diffused)
 
     b = jnp.where(sink_mask, 0.0, source)
-    diag = _diffusion_diagonal(conductivity, eps)
+    diag = _diffusion_diagonal(conductivity, eps, periodic_axes)
     diag = jnp.where(sink_mask, 1.0, jnp.clip(diag, eps, None))
 
     def M(u: jax.Array) -> jax.Array:
@@ -120,6 +139,7 @@ def connectivity_penalty(
     kappa_max: float = 1.0,
     *,
     invert: bool = False,
+    periodic_axes: Sequence[bool] | None = None,
     **solve_kwargs,
 ) -> jax.Array:
     """Integrated-temperature connectivity penalty (Kuster et al., Nanophotonics 14(9):1415-1426).
@@ -148,6 +168,9 @@ def connectivity_penalty(
         invert (bool): If True, solves the void-connectivity problem by swapping the role of
             `density` (uses `1 - density` as both the source and the conductivity driver).
             Defaults to False (material connectivity).
+        periodic_axes (Sequence[bool] | None): Per-axis wrap flags. `None` (default) keeps every
+            axis bounded. Required for a periodic unit cell, where a Neumann wall would report
+            material attached only through the cell boundary as floating.
         **solve_kwargs: Forwarded to `solve_steady_heat` (`tol`, `atol`, `maxiter`, `eps`).
 
     Returns:
@@ -157,7 +180,7 @@ def connectivity_penalty(
     """
     d = 1.0 - density if invert else density
     conductivity = kappa_min + d * (kappa_max - kappa_min)
-    u = solve_steady_heat(conductivity, source=d, sink_mask=sink_mask, **solve_kwargs)
+    u = solve_steady_heat(conductivity, source=d, sink_mask=sink_mask, periodic_axes=periodic_axes, **solve_kwargs)
     return jnp.sum(u)
 
 
