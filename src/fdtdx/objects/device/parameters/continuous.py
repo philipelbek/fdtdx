@@ -277,14 +277,27 @@ class GaussianSmoothing3D(SameShapeTypeParameterTransform):
     Applies Gaussian smoothing to genuinely 3D parameter arrays.
 
     Same construction as :class:`GaussianSmoothing2D` (pad each axis in turn, convolve with a
-    normalized isotropic Gaussian kernel, crop back to the original shape), extended to a true
+    normalized Gaussian kernel, crop back to the original shape), extended to a true
     third (z) axis instead of requiring a singleton z-voxel. Unlike ``GaussianSmoothing2D``, the
     input is used as-is (no squeeze/expand_dims dance) since all three axes carry real extent.
+
+    The standard deviation may be set per axis (see :attr:`std_discrete`), including 0 on an axis
+    to disable smoothing along it entirely while keeping that axis a genuine design dimension.
+    That matters for a device that is a thin slab of fixed thickness: a single, isotropic standard
+    deviation applies the same minimum-feature constraint through the thickness as in plane, and
+    when the kernel's +-3 sigma extent approaches the slab thickness, every voxel is averaged
+    against whatever lies beyond the slab (void, for an edge-padded or explicitly void-padded
+    axis). A fully solid slab then no longer filters to 1, the filtered field is compressed toward
+    the middle of its range, and the projected structure is pinched toward void at the outer
+    layers -- a deformation of the design, not a manufacturing constraint, since photolithography
+    constrains in-plane features and not the etch depth of a through-etched layer.
     """
 
-    #: Integer specifying the standard deviation of the Gaussian kernel in discrete units,
-    #: isotropic across all three axes.
-    std_discrete: int = frozen_field()
+    #: Standard deviation of the Gaussian kernel in discrete units. A single integer applies
+    #: isotropically to all three axes; a 3-tuple ``(std_x, std_y, std_z)`` sets each axis
+    #: independently. 0 on an axis means no smoothing along that axis: the kernel reduces to a
+    #: delta there, no padding is applied, and the axis passes through untouched.
+    std_discrete: int | tuple[int, int, int] = frozen_field()
 
     #: 2D array of shape ``(ny, nz)`` used as padding before axis 0. ``None`` falls back to edge-repeat.
     padding_low_axis0: jax.Array | None = frozen_field(default=None)
@@ -316,81 +329,109 @@ class GaussianSmoothing3D(SameShapeTypeParameterTransform):
         del kwargs
         return {k: self._apply_smoothing(v) for k, v in params.items()}
 
+    def _axis_stds(self) -> tuple[int, int, int]:
+        """`std_discrete` normalized to one standard deviation per axis."""
+        std = self.std_discrete
+        if isinstance(std, (tuple, list)):
+            if len(std) != 3:
+                raise ValueError(f"std_discrete as a sequence must have exactly 3 entries, got {std!r}")
+            stds = (int(std[0]), int(std[1]), int(std[2]))
+        else:
+            stds = (int(std), int(std), int(std))
+        if any(v < 0 for v in stds):
+            raise ValueError(f"std_discrete must be non-negative on every axis, got {stds!r}")
+        return stds
+
     def _apply_smoothing(self, x: jax.Array) -> jax.Array:
         if x.ndim != 3:
             raise ValueError(f"Expected 3D array, got shape {x.shape}")
         nx, ny, nz = x.shape
 
-        kernel_size = 6 * self.std_discrete + 1
-        kernel = self._create_gaussian_kernel(kernel_size, self.std_discrete)
-        pad_w = kernel_size // 2
+        stds = self._axis_stds()
+        # A std of 0 gives kernel size 1 (a delta) and hence pad width 0, so that axis is left
+        # untouched -- no padding blocks, no blurring -- while still being convolved over, which
+        # keeps the single `convolve` call below valid for any mix of smoothed and unsmoothed axes.
+        kernel_sizes = (6 * stds[0] + 1, 6 * stds[1] + 1, 6 * stds[2] + 1)
+        pad_w0, pad_w1, pad_w2 = (size // 2 for size in kernel_sizes)
+        kernel = self._create_gaussian_kernel(kernel_sizes, stds)
+
+        arr = x
 
         # Pad axis 0
-        if self.padding_low_axis0 is not None:
-            block_low0 = jnp.tile(self.padding_low_axis0[jnp.newaxis, :, :], (pad_w, 1, 1))
-        else:
-            block_low0 = jnp.tile(x[0:1, :, :], (pad_w, 1, 1))
+        if pad_w0 > 0:
+            if self.padding_low_axis0 is not None:
+                block_low0 = jnp.tile(self.padding_low_axis0[jnp.newaxis, :, :], (pad_w0, 1, 1))
+            else:
+                block_low0 = jnp.tile(arr[0:1, :, :], (pad_w0, 1, 1))
 
-        if self.padding_high_axis0 is not None:
-            block_high0 = jnp.tile(self.padding_high_axis0[jnp.newaxis, :, :], (pad_w, 1, 1))
-        else:
-            block_high0 = jnp.tile(x[-1:, :, :], (pad_w, 1, 1))
+            if self.padding_high_axis0 is not None:
+                block_high0 = jnp.tile(self.padding_high_axis0[jnp.newaxis, :, :], (pad_w0, 1, 1))
+            else:
+                block_high0 = jnp.tile(arr[-1:, :, :], (pad_w0, 1, 1))
 
-        arr = jnp.concatenate([block_low0, x, block_high0], axis=0)
+            arr = jnp.concatenate([block_low0, arr, block_high0], axis=0)
 
         # Pad axis 1; extend the (nx, nz) profiles with their own edge values to cover the
-        # corners created by axis-0 padding.
-        if self.padding_low_axis1 is not None:
-            corners_lo = jnp.tile(self.padding_low_axis1[0:1, :], (pad_w, 1))
-            corners_hi = jnp.tile(self.padding_low_axis1[-1:, :], (pad_w, 1))
-            extended = jnp.concatenate([corners_lo, self.padding_low_axis1, corners_hi], axis=0)
-            block_low1 = jnp.tile(extended[:, jnp.newaxis, :], (1, pad_w, 1))
-        else:
-            block_low1 = jnp.tile(arr[:, 0:1, :], (1, pad_w, 1))
+        # corners created by axis-0 padding (pad_w0 of them, which is 0 when axis 0 is unsmoothed).
+        if pad_w1 > 0:
+            if self.padding_low_axis1 is not None:
+                corners_lo = jnp.tile(self.padding_low_axis1[0:1, :], (pad_w0, 1))
+                corners_hi = jnp.tile(self.padding_low_axis1[-1:, :], (pad_w0, 1))
+                extended = jnp.concatenate([corners_lo, self.padding_low_axis1, corners_hi], axis=0)
+                block_low1 = jnp.tile(extended[:, jnp.newaxis, :], (1, pad_w1, 1))
+            else:
+                block_low1 = jnp.tile(arr[:, 0:1, :], (1, pad_w1, 1))
 
-        if self.padding_high_axis1 is not None:
-            corners_lo = jnp.tile(self.padding_high_axis1[0:1, :], (pad_w, 1))
-            corners_hi = jnp.tile(self.padding_high_axis1[-1:, :], (pad_w, 1))
-            extended = jnp.concatenate([corners_lo, self.padding_high_axis1, corners_hi], axis=0)
-            block_high1 = jnp.tile(extended[:, jnp.newaxis, :], (1, pad_w, 1))
-        else:
-            block_high1 = jnp.tile(arr[:, -1:, :], (1, pad_w, 1))
+            if self.padding_high_axis1 is not None:
+                corners_lo = jnp.tile(self.padding_high_axis1[0:1, :], (pad_w0, 1))
+                corners_hi = jnp.tile(self.padding_high_axis1[-1:, :], (pad_w0, 1))
+                extended = jnp.concatenate([corners_lo, self.padding_high_axis1, corners_hi], axis=0)
+                block_high1 = jnp.tile(extended[:, jnp.newaxis, :], (1, pad_w1, 1))
+            else:
+                block_high1 = jnp.tile(arr[:, -1:, :], (1, pad_w1, 1))
 
-        arr = jnp.concatenate([block_low1, arr, block_high1], axis=1)
+            arr = jnp.concatenate([block_low1, arr, block_high1], axis=1)
 
         # Pad axis 2; extend the (nx, ny) profiles (edge-repeat) to cover the corners/edges
         # created by axis-0/axis-1 padding.
-        if self.padding_low_axis2 is not None:
-            extended = jnp.pad(self.padding_low_axis2, ((pad_w, pad_w), (pad_w, pad_w)), mode="edge")
-            block_low2 = jnp.tile(extended[:, :, jnp.newaxis], (1, 1, pad_w))
-        else:
-            block_low2 = jnp.tile(arr[:, :, 0:1], (1, 1, pad_w))
+        if pad_w2 > 0:
+            if self.padding_low_axis2 is not None:
+                extended = jnp.pad(self.padding_low_axis2, ((pad_w0, pad_w0), (pad_w1, pad_w1)), mode="edge")
+                block_low2 = jnp.tile(extended[:, :, jnp.newaxis], (1, 1, pad_w2))
+            else:
+                block_low2 = jnp.tile(arr[:, :, 0:1], (1, 1, pad_w2))
 
-        if self.padding_high_axis2 is not None:
-            extended = jnp.pad(self.padding_high_axis2, ((pad_w, pad_w), (pad_w, pad_w)), mode="edge")
-            block_high2 = jnp.tile(extended[:, :, jnp.newaxis], (1, 1, pad_w))
-        else:
-            block_high2 = jnp.tile(arr[:, :, -1:], (1, 1, pad_w))
+            if self.padding_high_axis2 is not None:
+                extended = jnp.pad(self.padding_high_axis2, ((pad_w0, pad_w0), (pad_w1, pad_w1)), mode="edge")
+                block_high2 = jnp.tile(extended[:, :, jnp.newaxis], (1, 1, pad_w2))
+            else:
+                block_high2 = jnp.tile(arr[:, :, -1:], (1, 1, pad_w2))
 
-        arr = jnp.concatenate([block_low2, arr, block_high2], axis=2)
+            arr = jnp.concatenate([block_low2, arr, block_high2], axis=2)
 
         # method="fft" avoids XLA's direct 3D conv_general_dilated lowering (cuDNN backend on
         # some GPUs/driver versions fails to autotune true rank-3 spatial convolutions), and is
-        # also the more efficient choice for the fairly large (6*std_discrete+1)**3 kernel here.
+        # also the more efficient choice for the fairly large kernel here.
         result = jax.scipy.signal.convolve(arr, kernel, mode="same", method="fft")
-        result = result[pad_w : pad_w + nx, pad_w : pad_w + ny, pad_w : pad_w + nz]
+        result = result[pad_w0 : pad_w0 + nx, pad_w1 : pad_w1 + ny, pad_w2 : pad_w2 + nz]
 
         return result.reshape(x.shape)
 
-    def _create_gaussian_kernel(self, size: int, sigma: float) -> jax.Array:
-        # Create a coordinate grid
-        coords = jnp.arange(-(size // 2), size // 2 + 1)
-        x, y, z = jnp.meshgrid(coords, coords, coords, indexing="ij")
+    def _create_gaussian_kernel(self, sizes: tuple[int, int, int], sigmas: tuple[int, int, int]) -> jax.Array:
+        """Separable Gaussian kernel, built as the outer product of three normalized 1D kernels.
 
-        # Create the Gaussian kernel
-        kernel = jnp.exp(-(x**2 + y**2 + z**2) / (2 * sigma**2))
-
-        # Normalize the kernel to sum to 1
-        kernel = kernel / jnp.sum(kernel)
-
-        return kernel
+        For a single isotropic sigma this is identical to the dense
+        ``exp(-(x**2 + y**2 + z**2) / (2 * sigma**2))`` form it replaces, since that factorizes
+        exactly and each factor is normalized; building it per axis is what admits a different
+        sigma -- or none at all -- on each one. An axis with sigma 0 contributes a length-1 factor
+        of ``[1.0]``, i.e. a delta, leaving that axis unsmoothed.
+        """
+        factors = []
+        for size, sigma in zip(sizes, sigmas):
+            coords = jnp.arange(-(size // 2), size // 2 + 1)
+            if sigma <= 0:
+                factor = jnp.ones((1,), dtype=jnp.result_type(float))
+            else:
+                factor = jnp.exp(-(coords**2) / (2 * sigma**2))
+            factors.append(factor / jnp.sum(factor))
+        return factors[0][:, None, None] * factors[1][None, :, None] * factors[2][None, None, :]
