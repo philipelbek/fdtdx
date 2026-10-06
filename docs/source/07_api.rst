@@ -31,10 +31,12 @@ API
     fdtdx.compute_pole_coefficients_tensor
     fdtdx.compute_poynting_flux
     fdtdx.ConnectHolesAndStructures
+    fdtdx.connectivity_penalty
     fdtdx.CustomModeOverlapDetector
     fdtdx.CustomTimeSignalProfile
     fdtdx.Cylinder
     fdtdx.Detector
+    fdtdx.detectors_from_gds_ports
     fdtdx.DetectorState
     fdtdx.Device
     fdtdx.DiagonalSymmetry2D
@@ -50,15 +52,16 @@ API
     fdtdx.export_vti
     fdtdx.export_vtr
     fdtdx.extend_material_to_pml
-    fdtdx.ExtrudedPolygon
     fdtdx.extruded_polygon_from_gds
     fdtdx.extruded_polygon_from_gds_path
+    fdtdx.ExtrudedPolygon
     fdtdx.field
     fdtdx.FieldDetector
     fdtdx.FieldProjectionAngleDetector
     fdtdx.FieldProjectionCartesianDetector
     fdtdx.FieldProjectionKSpaceDetector
     fdtdx.FieldState
+    fdtdx.FieldTanhProjection
     fdtdx.frozen_field
     fdtdx.frozen_private_field
     fdtdx.full_backward
@@ -67,13 +70,20 @@ API
     fdtdx.GaussianPlaneSource
     fdtdx.GaussianPulseProfile
     fdtdx.GaussianSmoothing2D
+    fdtdx.GaussianSmoothing3D
     fdtdx.GaussianWindow
+    fdtdx.gds_layer_stack
+    fdtdx.gds_layer_stack_from_component
+    fdtdx.GDSLayerObject
+    fdtdx.GDSLayerSpec
+    fdtdx.GDSPortSpec
     fdtdx.GradientConfig
     fdtdx.GridCoordinateConstraint
     fdtdx.HorizontalSymmetry2D
     fdtdx.HorizontalSymmetry3D
     fdtdx.import_from_json
     fdtdx.LinearReconstructEveryK
+    fdtdx.log_scaled_objective
     fdtdx.Logger
     fdtdx.LorentzPole
     fdtdx.Material
@@ -90,8 +100,8 @@ API
     fdtdx.ParameterContainer
     fdtdx.ParameterTransformation
     fdtdx.PerfectElectricConductor
-    fdtdx.PerfectMagneticConductor
     fdtdx.PerfectlyMatchedLayer
+    fdtdx.PerfectMagneticConductor
     fdtdx.PeriodicBoundary
     fdtdx.PhasorDetector
     fdtdx.PhasorPoyntingFluxDetector
@@ -112,11 +122,13 @@ API
     fdtdx.PoyntingFluxDetector
     fdtdx.private_field
     fdtdx.QuasiUniformGrid
+    fdtdx.RandomEtaFieldGenerator
     fdtdx.RealCoordinateConstraint
     fdtdx.Recorder
     fdtdx.RecordingState
     fdtdx.RectilinearGrid
     fdtdx.RemoveFloatingMaterial
+    fdtdx.renormalize
     fdtdx.resolve_object_constraints
     fdtdx.run_fdtd
     fdtdx.setup_sparams_simulation
@@ -127,6 +139,10 @@ API
     fdtdx.SingleFrequencyProfile
     fdtdx.SizeConstraint
     fdtdx.SizeExtensionConstraint
+    fdtdx.softplus_combine
+    fdtdx.solve_nonlinear_steady_heat
+    fdtdx.solve_steady_heat
+    fdtdx.sources_from_gds_ports
     fdtdx.Sphere
     fdtdx.StandardToCustomRange
     fdtdx.StandardToInversePermittivityRange
@@ -150,10 +166,4 @@ API
     fdtdx.VerticalSymmetry3D
     fdtdx.WaveCharacter
     fdtdx.wavelength_to_period
-    fdtdx.GDSLayerObject
-    fdtdx.GDSLayerSpec
-    fdtdx.GDSPortSpec
-    fdtdx.detectors_from_gds_ports
-    fdtdx.gds_layer_stack
-    fdtdx.gds_layer_stack_from_component
-    fdtdx.sources_from_gds_ports
+    fdtdx.weighted_p_mean
